@@ -16,6 +16,12 @@ API_KEY_NAME = "X-API-KEY"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
 def get_api_key(api_key: str = Depends(api_key_header)):
+    expected_api_key = os.getenv("API_KEY")
+
+    # Validasi kecocokan key yang dikirim client dengan server
+    if api_key == expected_api_key:
+        return api_key
+
     raise HTTPException(
         status_code=403, 
         detail="Akses Ditolak: API Key tidak valid atau tidak disertakan."
