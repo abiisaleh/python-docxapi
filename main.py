@@ -1,6 +1,6 @@
 import io
 import os
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Security, Depends
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.responses import StreamingResponse
 from docx import Document
@@ -27,51 +27,74 @@ def get_api_key(api_key: str = Depends(api_key_header)):
         detail="Akses Ditolak: API Key tidak valid atau tidak disertakan."
     )
 
-def replace_placeholder_in_paragraph(paragraph, placeholder, replacement):
+def replace_placeholder_in_paragraph(paragraph, placeholder, replacement) -> bool:
     """
     Fungsi cerdas untuk mengganti placeholder di paragraf Word tanpa merusak format 
     meskipun teks terpecah menjadi beberapa Run oleh MS Word.
+    Mengembalikan True jika ada penggantian yang dilakukan, False jika tidak.
     """
-    if placeholder in paragraph.text:
-        # Jika teks berada dalam satu run utuh
-        for run in paragraph.runs:
-            if placeholder in run.text:
-                run.text = run.text.replace(placeholder, replacement)
-                return
-        
-        # Jika teks terpecah di beberapa run, gabungkan lalu ganti teks di run pertama, 
-        # dan kosongkan teks di run berikutnya yang mengandung sisa placeholder.
-        full_text = paragraph.text
-        new_text = full_text.replace(placeholder, replacement)
-        
-        # Reset seluruh run dan masukkan teks baru ke run pertama saja agar format sisa paragraf aman
-        if paragraph.runs:
-            paragraph.runs[0].text = new_text
-            for run in paragraph.runs[1:]:
-                run.text = ""
+    replaced = False
+
+    # Jika tidak ada placeholder sama sekali, cepat keluar
+    if placeholder not in paragraph.text:
+        return False
+
+    # Coba ganti di setiap run (mengatasi kasus placeholder berada di satu atau beberapa run)
+    for run in paragraph.runs:
+        if placeholder in run.text:
+            run.text = run.text.replace(placeholder, replacement)
+            replaced = True
+
+    if replaced:
+        return True
+
+    # Jika teks terpecah di beberapa run sehingga tidak ditemukan pada run tunggal,
+    # gabungkan seluruh teks, ganti, lalu tulis ulang ke run pertama dan kosongkan yang lain.
+    full_text = paragraph.text
+    new_text = full_text.replace(placeholder, replacement)
+
+    if paragraph.runs:
+        paragraph.runs[0].text = new_text
+        for run in paragraph.runs[1:]:
+            run.text = ""
+        return True
+
+    return False
+
 
 def process_docx(file_bytes: bytes, nomor_surat: str) -> io.BytesIO:
     try:
         doc = Document(io.BytesIO(file_bytes))
-        
+
         # PASTIKAN tulisan di file Word Anda tepat sama dengan isi variabel ini (menggunakan huruf kecil/besar yang sama)
         placeholder = "{nomor}"
-        
+
+        any_replacement = False
+
         # 1. Proses Paragraf Biasa
         for paragraph in doc.paragraphs:
-            replace_placeholder_in_paragraph(paragraph, placeholder, nomor_surat)
-                        
+            if replace_placeholder_in_paragraph(paragraph, placeholder, nomor_surat):
+                any_replacement = True
+
         # 2. Proses Paragraf di Dalam Tabel
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
                     for paragraph in cell.paragraphs:
-                        replace_placeholder_in_paragraph(paragraph, placeholder, nomor_surat)
-        
+                        if replace_placeholder_in_paragraph(paragraph, placeholder, nomor_surat):
+                            any_replacement = True
+
+        if not any_replacement:
+            # Jika tidak ada penggantian sama sekali, berikan pesan error yang jelas
+            raise HTTPException(status_code=400, detail=f"Placeholder {placeholder} tidak ditemukan dalam dokumen.")
+
         output_buffer = io.BytesIO()
         doc.save(output_buffer)
         output_buffer.seek(0)
         return output_buffer
+    except HTTPException:
+        # Biarkan HTTPException (mis. 400 placeholder) keluar apa adanya
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Gagal memproses dokumen: {str(e)}")
 
